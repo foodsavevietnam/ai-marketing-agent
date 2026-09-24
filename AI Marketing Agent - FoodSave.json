@@ -1,0 +1,244 @@
+{
+  "name": "AI Marketing Agent - FoodSave",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "df3b6777-fff0-4785-b29c-a04b4821d68f",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "resource": "worksheet",
+        "operation": "readRows",
+        "workbook": {
+          "__rl": true,
+          "value": "617ACF4BBD041395!s102f4ab086664cd2877b2e8f9d80ecce",
+          "mode": "list",
+          "cachedResultName": "data_n8n",
+          "cachedResultUrl": "https://onedrive.live.com/personal/617acf4bbd041395/_layouts/15/doc.aspx?resid=102f4ab0-8666-4cd2-877b-2e8f9d80ecce&cid=617acf4bbd041395"
+        },
+        "worksheet": {
+          "__rl": true,
+          "value": "{00000000-0001-0000-0000-000000000000}",
+          "mode": "list",
+          "cachedResultName": "data",
+          "cachedResultUrl": "https://onedrive.live.com/personal/617acf4bbd041395/_layouts/15/doc.aspx?resid=102f4ab0-8666-4cd2-877b-2e8f9d80ecce&cid=617acf4bbd041395&activeCell=data!A1"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "1e02c2cc-1d72-4c29-aee8-623bdd78e716",
+      "name": "Get rows from sheet",
+      "alwaysOutputData": false,
+      "credentials": {
+        "microsoftExcelOAuth2Api": {
+          "id": "b1O3dWkJyoSErO45",
+          "name": "Microsoft Excel account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== NODE \"Dashboard\" – TỰ NHẬN DIỆN CỘT, KHÔNG PHỤ THUỘC TÊN CỘT =====\n// Đổi file Excel khác (cột khác) vẫn chạy được. Muốn chỉ định thủ công thì điền ở node \"Cài đặt\".\n\nconst rows = $input.all().map(i => i.json);\nif (!rows.length) throw new Error('Không có dữ liệu từ node Excel');\n\n// ---- 1. Đọc cài đặt (nếu có) ----\nlet cfg = {};\ntry { cfg = $('Cài đặt').first().json; } catch (e) {}\nconst list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);\nconst boQua = list(cfg.cot_bo_qua);\n\n// ---- 2. Hàm tiện ích ----\nconst toNum = v => {\n  if (typeof v === 'number') return v;\n  if (v === null || v === undefined || v === '') return null;\n  let s = String(v).replace(/[\\s₫đ%$]|VND/gi, '');\n  if (!/^-?[\\d.,]+$/.test(s)) return null;\n  if ((s.match(/\\./g) || []).length > 1) s = s.replace(/\\./g, '');        // 1.200.000\n  if ((s.match(/,/g) || []).length > 1) s = s.replace(/,/g, '');\n  s = s.replace(',', '.');\n  const n = Number(s);\n  return isNaN(n) ? null : n;\n};\nconst toPeriod = (v, colName) => {\n  if (v === null || v === undefined || v === '') return null;\n  if (typeof v === 'number' && v > 20000 && v < 80000) {          // số serial ngày của Excel\n    const d = new Date(Math.round((v - 25569) * 86400000));\n    return d.toISOString().slice(0, 7);\n  }\n  const s = String(v);\n  let m = s.match(/^(\\d{4})[-/.](\\d{1,2})/);                         // 2024-01 / 2024-01-15\n  if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;\n  m = s.match(/^(\\d{1,2})[-/.](\\d{1,2})[-/.](\\d{4})/);               // 15/01/2024\n  if (m) return `${m[3]}-${m[2].padStart(2, '0')}`;\n  m = s.match(/^(\\d{1,2})[-/.](\\d{4})$/);                            // 01/2024\n  if (m) return `${m[2]}-${m[1].padStart(2, '0')}`;\n  if (/^\\d{4}$/.test(s) && /nam|year/i.test(colName)) return s;\n  return null;\n};\nconst round = n => Math.round(n * 100) / 100;\n\n// ---- 3. Nhận diện loại cột ----\nconst cols = [...new Set(rows.flatMap(r => Object.keys(r)))].filter(c => !boQua.includes(c));\nconst idName = /(^|_|\\s)(id|key|code|sku|ma|mã|stt|index|phone|sdt|email)($|_|\\s)/i;\nconst dateName = /date|ngay|ngày|thang|tháng|month|time|thoi_gian|thời gian|year|nam|năm|period|ky|kỳ/i;\nconst info = {};\nfor (const c of cols) {\n  const vals = rows.map(r => r[c]).filter(v => v !== null && v !== undefined && v !== '');\n  const uniq = new Set(vals.map(String)).size;\n  const nums = vals.map(toNum).filter(v => v !== null);\n  const periods = vals.map(v => toPeriod(v, c)).filter(Boolean);\n  let type;\n  if (!vals.length) type = 'trống';\n  else if (dateName.test(c) && periods.length / vals.length > 0.8) type = 'thời gian';\n  else if (!dateName.test(c) && typeof vals[0] === 'string' && periods.length / vals.length > 0.9) type = 'thời gian';\n  else if (nums.length / vals.length > 0.9) {\n    if (idName.test(c) && uniq > 30) type = 'mã/ID';\n    else if (uniq <= 12 && idName.test(c)) type = 'nhóm';\n    else if (uniq <= 5 && nums.every(Number.isInteger) && !/qty|so_luong|số lượng|quantity|don|đơn/i.test(c)) type = 'nhóm';\n    else if (uniq / vals.length > 0.95 && vals.length > 50 && Number.isInteger(nums[0]) && nums[0] > 1e6) type = 'mã/ID';\n    else type = 'số';\n  }\n  else if (uniq <= Math.max(50, rows.length * 0.05)) type = 'nhóm';\n  else type = 'văn bản';\n  info[c] = { type, so_gia_tri_khac_nhau: uniq };\n}\n// Cho phép ép kiểu bằng cài đặt\nif (cfg.cot_thoi_gian && info[cfg.cot_thoi_gian]) info[cfg.cot_thoi_gian].type = 'thời gian';\nif (cfg.cot_gia_tri && info[cfg.cot_gia_tri]) info[cfg.cot_gia_tri].type = 'số';\nlist(cfg.cot_nhom).forEach(c => info[c] && (info[c].type = 'nhóm'));\n\nconst measures = cols.filter(c => info[c].type === 'số');\nconst dims = cols.filter(c => info[c].type === 'nhóm')\n  .sort((a, b) => info[a].so_gia_tri_khac_nhau - info[b].so_gia_tri_khac_nhau);\nconst timeCol = cols.find(c => info[c].type === 'thời gian');\nconst moneyName = /doanh|revenue|sales|value|amount|gia_tri|giá trị|tien|tiền|thu|gmv|profit|loi_nhuan/i;\n\n// Chỉ số chính\nconst sums = {};\nmeasures.forEach(m => sums[m] = rows.reduce((s, r) => s + (toNum(r[m]) || 0), 0));\nconst mainMeasure = (cfg.cot_gia_tri && measures.includes(cfg.cot_gia_tri)) ? cfg.cot_gia_tri\n  : (measures.find(m => moneyName.test(m)) || measures.sort((a, b) => sums[b] - sums[a])[0]);\n\n// ---- 4. Tính toán dashboard ----\nconst MAX_MEASURES = 8, MAX_DIMS = 6, TOP = 10;\nconst useMeasures = [mainMeasure, ...measures.filter(m => m !== mainMeasure)].filter(Boolean).slice(0, MAX_MEASURES);\n\nconst chi_so_tong = {};\nuseMeasures.forEach(m => {\n  const v = rows.map(r => toNum(r[m])).filter(x => x !== null);\n  chi_so_tong[m] = { tong: round(sums[m]), trung_binh: round(sums[m] / (v.length || 1)),\n    nho_nhat: Math.min(...v), lon_nhat: Math.max(...v) };\n});\n\nconst groupBy = (col, keyFn = r => r[col]) => {\n  const g = {};\n  rows.forEach(r => {\n    const k = keyFn(r); if (k === null || k === undefined || k === '') return;\n    g[k] = g[k] || { so_dong: 0 };\n    g[k].so_dong++;\n    useMeasures.forEach(m => g[k][m] = (g[k][m] || 0) + (toNum(r[m]) || 0));\n  });\n  return g;\n};\n\nconst theo_nhom = {};\ndims.slice(0, MAX_DIMS).forEach(d => {\n  const g = groupBy(d);\n  const total = mainMeasure ? sums[mainMeasure] : rows.length;\n  theo_nhom[d] = Object.entries(g)\n    .map(([k, v]) => ({ [d]: k, ...Object.fromEntries(Object.entries(v).map(([a, b]) => [a, round(b)])),\n      ti_trong_pct: round(100 * (mainMeasure ? v[mainMeasure] : v.so_dong) / (total || 1)) }))\n    .sort((a, b) => (mainMeasure ? b[mainMeasure] - a[mainMeasure] : b.so_dong - a.so_dong))\n    .slice(0, TOP);\n});\n\nlet xu_huong = null, bien_dong = null;\nif (timeCol) {\n  const g = groupBy(timeCol, r => toPeriod(r[timeCol], timeCol));\n  xu_huong = Object.keys(g).sort().map(k => ({ ky: k, ...Object.fromEntries(Object.entries(g[k]).map(([a, b]) => [a, round(b)])) }));\n  if (xu_huong.length >= 2) {\n    const last = xu_huong[xu_huong.length - 1], prev = xu_huong[xu_huong.length - 2];\n    bien_dong = { ky_moi_nhat: last.ky, ky_truoc: prev.ky };\n    useMeasures.forEach(m => bien_dong[m + '_thay_doi_pct'] = prev[m] ? round(100 * (last[m] - prev[m]) / prev[m]) : null);\n  }\n}\n\n// ---- 5. Biểu đồ (QuickChart) ----\nconst chartUrl = cfgChart => 'https://quickchart.io/chart?w=700&h=380&c=' + encodeURIComponent(JSON.stringify(cfgChart));\nconst bieu_do = [];\nif (xu_huong && mainMeasure) {\n  const s = xu_huong.slice(-24);\n  bieu_do.push({ ten: `Xu hướng ${mainMeasure} theo ${timeCol}`, url: chartUrl({ type: 'line',\n    data: { labels: s.map(x => x.ky), datasets: [{ label: mainMeasure, data: s.map(x => x[mainMeasure]), fill: false }] } }) });\n}\ndims.slice(0, 3).forEach(d => {\n  const s = theo_nhom[d];\n  bieu_do.push({ ten: `${mainMeasure || 'Số dòng'} theo ${d}`, url: chartUrl({ type: s.length <= 6 ? 'doughnut' : 'bar',\n    data: { labels: s.map(x => x[d]), datasets: [{ label: mainMeasure || 'so_dong', data: s.map(x => x[mainMeasure || 'so_dong']) }] } }) });\n});\n\n// ---- 6. Bản tóm tắt ngắn gọn cho AI (giúp AI chạy nhanh, ít bị quá tải) ----\nconst fmt = n => (n === null || n === undefined) ? '-' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });\nconst L = [];\nL.push(`Dữ liệu: ${rows.length} dòng. Chỉ số chính: ${mainMeasure || 'số dòng'}. Cột thời gian: ${timeCol || 'không có'}.`);\nL.push('TỔNG: ' + useMeasures.map(m => `${m}=${fmt(chi_so_tong[m].tong)}`).join('; '));\nif (bien_dong) L.push(`BIẾN ĐỘNG ${bien_dong.ky_moi_nhat} so với ${bien_dong.ky_truoc}: ` +\n  useMeasures.map(m => `${m} ${bien_dong[m + '_thay_doi_pct'] > 0 ? '+' : ''}${fmt(bien_dong[m + '_thay_doi_pct'])}%`).join('; '));\ndims.slice(0, MAX_DIMS).forEach(d => {\n  L.push(`THEO ${d} (top 5): ` + theo_nhom[d].slice(0, 5).map(g =>\n    `${g[d]} [` + useMeasures.slice(0, 5).map(m => `${m}=${fmt(g[m])}`).join(', ') + `, tỷ trọng ${g.ti_trong_pct}%]`).join(' | '));\n});\nif (xu_huong && mainMeasure) L.push(`XU HƯỚNG ${mainMeasure} 12 kỳ gần nhất: ` +\n  xu_huong.slice(-12).map(x => `${x.ky}: ${fmt(x[mainMeasure])}`).join(', '));\nconst tom_tat_cho_AI = L.join('\\n');\n\n// ---- 7. Kết quả ----\nreturn [{ json: {\n  tong_quan: { so_dong: rows.length, so_cot: cols.length, chi_so_chinh: mainMeasure || null,\n    cot_thoi_gian: timeCol || null, cot_so: useMeasures, cot_nhom: dims.slice(0, MAX_DIMS),\n    cot_bo_qua: cols.filter(c => ['mã/ID', 'văn bản', 'trống'].includes(info[c].type)) },\n  chi_so_tong, bien_dong, theo_nhom,\n  xu_huong: xu_huong ? xu_huong.slice(-12) : null,\n  bieu_do,\n  tom_tat_cho_AI,\n  cau_truc_cot: info\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "17073865-ebff-4293-a3ce-16944f1b3775",
+      "name": "Dashboard"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3.8-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-3.8-flash",
+          "cachedResultUrl": ""
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Bạn là Giám đốc Marketing (CMO). Dưới đây là dashboard được tính tự động từ dữ liệu Excel:\n{{ $('Dashboard').item.json.tom_tat_cho_AI }}\n\nPHẦN 1 – INSIGHT: nêu 5 insight quan trọng nhất, mỗi insight phải có số liệu dẫn chứng\n(doanh thu, tỷ trọng %, tăng/giảm % kỳ gần nhất; nếu dữ liệu có lượt xem và đơn hàng\nthì tính thêm tỷ lệ chuyển đổi).\n\nPHẦN 2 – CHIẾN LƯỢC MARKETING DO BẠN TỰ QUYẾT ĐỊNH (mỗi quyết định giải thích dựa trên insight nào):\n1. Mục tiêu chiến dịch\n2. Sản phẩm / nhóm hàng cần đẩy\n3. Khách hàng mục tiêu và khu vực ưu tiên\n4. Chọn 2–3 kênh quảng cáo phù hợp nhất trong: Facebook, TikTok, Instagram, Google Ads,\n   Shopee Ads, Zalo, Email marketing, YouTube\n5. Thông điệp chính và giọng văn\n6. Phân bổ ngân sách (%) cho từng kênh đã chọn\n\nTrả lời ngắn gọn, súc tích bằng tiếng Việt. Trình bày bằng HTML đơn giản (dùng thẻ h3, p, ul, li, b),\nKHÔNG dùng markdown, KHÔNG bọc trong ```."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "36f8188d-dc5a-4ed8-a21d-e1786791a6cc",
+      "name": "Chiến lược",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "hBmnEyWucU52oV3H",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3-flash-preview",
+          "mode": "list"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Dưới đây là insight và chiến lược marketing đã được quyết định:\n{{ $('Chiến lược').item.json.content.parts[0].text }}\n\nHãy triển khai chiến lược: với MỖI kênh quảng cáo đã được chọn, viết content sẵn sàng đăng,\nđúng định dạng của kênh đó:\n- Facebook/Instagram: tiêu đề, nội dung, hashtag, lời kêu gọi hành động, gợi ý hình ảnh\n- TikTok/YouTube: kịch bản video 15–30 giây (cảnh quay + lời thoại + chữ trên video)\n- Google Ads: 3 headline (≤30 ký tự) + 2 description (≤90 ký tự)\n- Shopee Ads: tên chương trình, từ khóa, nội dung ưu đãi\n- Zalo/Email: tiêu đề + nội dung tin nhắn\nChỉ viết cho các kênh đã được chọn trong chiến lược.\nTrả lời bằng tiếng Việt, trình bày bằng HTML đơn giản (h3, p, ul, li, b),\nKHÔNG dùng markdown, KHÔNG bọc trong ```."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "e9682290-26e5-46b6-87d6-80c0bb246d98",
+      "name": "Viết content",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "hBmnEyWucU52oV3H",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "foodsavevietnam@gmail.com",
+        "subject": "AI Marketing Agent – Dashboard, chiến lược & content",
+        "message": "=<h1>📈 Dashboard tự động</h1>\n{{ $('Dashboard').item.json.bieu_do.map(b => '<h3>' + b.ten + '</h3><img src=\"' + b.url + '\" width=\"600\">').join('') }}\n<h1>🧠 Insight & Chiến lược</h1>\n{{ $('Chiến lược').item.json.content.parts[0].text }}\n<h1>✍️ Content quảng cáo</h1>\n{{ $('Viết content').item.json.content.parts[0].text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1408,
+        0
+      ],
+      "id": "cab28c31-262a-497c-9d08-ebfcd4e73d5e",
+      "name": "Send a message",
+      "webhookId": "259eb21c-d397-43d1-a051-82e2e441def6",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "o5AHUE539sKMuUIX",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get rows from sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get rows from sheet": {
+      "main": [
+        [
+          {
+            "node": "Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dashboard": {
+      "main": [
+        [
+          {
+            "node": "Chiến lược",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chiến lược": {
+      "main": [
+        [
+          {
+            "node": "Viết content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Viết content": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "90a984a7-6899-443d-8840-947bc5b68dd4",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6b9e6333d13fca4138117d5a24884f5357fcc8f41301e5cb80ae905fa49771fb"
+  },
+  "nodeGroups": [],
+  "id": "kUgRHa6vbxFS0kdR",
+  "tags": []
+}
