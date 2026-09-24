@@ -23,8 +23,9 @@ import streamlit as st
 from google import genai
 from google.genai import types
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from streamlit_js_eval import streamlit_js_eval
 
-st.set_page_config(page_title="AI Marketing Agent", page_icon="🚀", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="FoodSave · AI Marketing Agent", page_icon="🌱", layout="wide", initial_sidebar_state="collapsed")
 
 # =====================================================================
 # 0. CẤU HÌNH – chỉnh ở đây (người dùng web không cần chỉnh gì)
@@ -82,13 +83,20 @@ def text_models():
     return pick(TEXT_MODELS, lambda n: n.startswith("gemini") and not any(w in n for w in SKIP_WORDS))
 
 
-def ask_gemini(contents, json_mode=False):
-    """Gọi model xịn nhất dùng được. Quá tải → thử lại; không có quyền/hết lượt → tự chuyển model kế tiếp."""
+def ask_gemini(contents, json_mode=False, search=False):
+    """Gọi model xịn nhất dùng được. Quá tải → thử lại; không có quyền/hết lượt → tự chuyển model kế tiếp.
+    search=True: cho AI tra Google để trả lời thông tin mới (lỗi thì tự tắt tra cứu)."""
     client = genai.Client(api_key=get_api_key())
-    cfg = types.GenerateContentConfig(response_mime_type="application/json") if json_mode else None
     last_err = None
     for m in text_models()[:5]:
-        for attempt in range(2):
+        use_search = search and not st.session_state.get("no_search")
+        for attempt in range(3):
+            if json_mode:
+                cfg = types.GenerateContentConfig(response_mime_type="application/json")
+            elif use_search:
+                cfg = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
+            else:
+                cfg = None
             try:
                 res = client.models.generate_content(model=m, contents=contents, config=cfg)
                 st.session_state.last_model = m
@@ -97,6 +105,10 @@ def ask_gemini(contents, json_mode=False):
                 last_err, msg = e, str(e)
                 if any(x in msg for x in BUSY):
                     time.sleep(3 * (attempt + 1))
+                    continue
+                if use_search:                              # tra Google không được → hỏi lại không tra cứu
+                    use_search = False
+                    st.session_state.no_search = True
                     continue
                 if m in PAID_ONLY and any(x in msg for x in NO_QUOTA):
                     st.session_state.free_key = True        # key gói free → từ giờ bỏ qua model trả phí
@@ -723,6 +735,7 @@ CSS = f"""
 .fs-hint {{ display: inline-block; background: #F0FDF4; border: 1px solid #BBF7D0; color: #166534; border-radius: 999px;
   padding: 6px 14px; margin: 0 6px 8px 0; font-size: 14px; font-weight: 600; }}
 .fs-media-t {{ font-weight: 800; font-size: 15px; color: {INK}; margin-bottom: 6px; }}
+iframe[title*="streamlit_js_eval"] {{ height: 0 !important; border: 0; display: block; }}
 .fs-footer {{ text-align: center; color: #9CA3AF; font-size: 13px; margin-top: 40px; }}
 </style>
 """
@@ -784,6 +797,37 @@ def show_dashboard(d):
         st.code(d["summary"], language=None)
 
 
+LS_KEY = "foodsave_ai_chats_v1"
+
+
+def load_chats():
+    """Đọc lịch sử chat đã lưu trong trình duyệt (localStorage) – mỗi người dùng chỉ thấy lịch sử của mình."""
+    if st.session_state.get("chats_loaded"):
+        return
+    raw = streamlit_js_eval(js_expressions=f"localStorage.getItem('{LS_KEY}') || '{{}}'", key="ls_load")
+    if raw is None:                       # trình duyệt chưa trả lời, lần chạy sau sẽ có
+        return
+    try:
+        saved = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        saved = {}
+    if isinstance(saved, dict):
+        saved.update(st.session_state.get("chats", {}))
+        st.session_state.chats = saved
+    st.session_state.chats_loaded = True
+
+
+def save_chats():
+    """Ghi lịch sử chat vào trình duyệt (chỉ khi có thay đổi)."""
+    if not st.session_state.pop("need_save", False):
+        return
+    st.session_state.save_n = st.session_state.get("save_n", 0) + 1
+    data = dict(sorted(st.session_state.get("chats", {}).items(), reverse=True)[:40])   # giữ 40 cuộc gần nhất
+    payload = json.dumps(json.dumps(data, ensure_ascii=False))
+    streamlit_js_eval(js_expressions=f"localStorage.setItem('{LS_KEY}', {payload})",
+                      key=f"ls_save_{st.session_state.save_n}")
+
+
 # ---------------- khung trang ----------------
 html(CSS)
 api_key = get_api_key()
@@ -796,8 +840,8 @@ if api_key:
 
 html('<div class="fs-bar"><span>Excel → Dashboard → Chiến lược → Content → Ảnh & Video · tự động 100%</span>'
      '<span class="live">LIVE</span></div>')
-html('<div style="margin-top:16px"><div class="fs-logo">AI <span>Marketing</span> Agent<i></i></div>'
-     '<div class="fs-logo-sub">TỰ ĐỘNG HÓA MARKETING TỪ DỮ LIỆU BÁN HÀNG</div></div>')
+html('<div style="margin-top:16px"><div class="fs-logo">FOOD<span>SAVE</span><i></i></div>'
+     '<div class="fs-logo-sub">AI MARKETING AGENT</div></div>')
 
 model_now = st.session_state.get("last_model") or (text_models()[0] if ready else "")
 if ready:
@@ -940,33 +984,111 @@ with tab_agent:
 
 # ---------------- TAB 2 ----------------
 with tab_chat:
-    with st.container(border=True):
-        section("💬", "Hỏi đáp cùng AI", "Đã tải dữ liệu ở tab bên cạnh thì AI trả lời dựa trên dashboard đó")
-        st.session_state.setdefault("messages", [])
-        if not st.session_state.messages:
-            html('<span class="fs-hint">Nhóm hàng nào nên đẩy quảng cáo?</span>'
-                 '<span class="fs-hint">Kênh nào chuyển đổi tốt nhất?</span>'
-                 '<span class="fs-hint">Viết 1 caption Facebook cho sản phẩm bán chạy</span>')
-        for msg in st.session_state.messages:
-            st.chat_message(msg["role"], avatar="🧑" if msg["role"] == "user" else "🤖").markdown(msg["text"])
-        question = st.chat_input("Nhập câu hỏi...", disabled=not ready)
-        if question:
-            st.session_state.messages.append({"role": "user", "text": question})
-            context = ""
-            if st.session_state.get("dash"):
-                context = "Bạn là trợ lý marketing. Dữ liệu dashboard hiện tại:\n" + st.session_state.dash["summary"] + "\n\n"
-            history = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["text"]}]}
-                       for m in st.session_state.messages]
-            history[0]["parts"][0]["text"] = context + history[0]["parts"][0]["text"]
-            try:
-                with st.spinner("Đang suy nghĩ..."):
-                    answer, _ = ask_gemini(history)
-            except Exception as e:  # noqa: BLE001
-                answer = f"⚠️ {e}"
-            st.session_state.messages.append({"role": "assistant", "text": answer})
+    load_chats()
+    chats = st.session_state.setdefault("chats", {})
+    cur = st.session_state.get("cur_chat")
+    if cur not in chats:
+        cur = None
+    has_data = bool(st.session_state.get("dash")) and has_file
+
+    left, right = st.columns([1, 2.6], gap="medium")
+
+    # ----- cột trái: lịch sử chat -----
+    with left.container(border=True):
+        html('<div class="fs-media-t">🗂️ Lịch sử chat</div>')
+        if st.button("➕ Cuộc trò chuyện mới", width="stretch", type="primary"):
+            st.session_state.cur_chat = None
             st.rerun()
-        if st.session_state.messages and st.button("🗑️ Xóa lịch sử chat"):
-            st.session_state.messages = []
+        if not chats:
+            st.caption("Chưa có cuộc trò chuyện nào. Lịch sử được lưu ngay trên trình duyệt của bạn.")
+        for cid in sorted(chats, reverse=True)[:40]:
+            c = chats[cid]
+            icon = "📎" if c.get("data_name") else "💬"
+            if st.button(f"{icon} {c.get('title', 'Cuộc trò chuyện')}", key=f"open_{cid}", width="stretch",
+                         type="primary" if cid == cur else "secondary", help=c.get("time", "")):
+                st.session_state.cur_chat = cid
+                st.rerun()
+        with st.expander("💾 Sao lưu / khôi phục"):
+            st.download_button("⬇️ Tải toàn bộ lịch sử (.json)", json.dumps(chats, ensure_ascii=False, indent=1),
+                               "lich_su_chat.json", "application/json", width="stretch")
+            up = st.file_uploader("Khôi phục từ file .json", type=["json"], key="chat_restore")
+            if up and st.button("Khôi phục", width="stretch"):
+                try:
+                    chats.update(json.loads(up.read().decode("utf-8")))
+                    st.session_state.need_save = True
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"File không hợp lệ: {e}")
+
+    # ----- cột phải: khung chat -----
+    with right.container(border=True):
+        chat = chats.get(cur) if cur else None
+        data_name = chat.get("data_name") if chat else (st.session_state.data_file.name if has_data else None)
+        section("💬", "Hỏi đáp cùng AI",
+                f"📎 Đang dùng dữ liệu: {data_name}" if data_name else
+                "Hỏi gì cũng được — kiến thức chung, tin tức, marketing, học tập… (không cần tải dữ liệu)")
+        if not ready:
+            st.warning("AI chưa sẵn sàng: cần thêm GEMINI_API_KEY vào Secrets của Streamlit.")
+
+        picked = None
+        if not chat:
+            suggestions = (["Nhóm hàng nào nên đẩy quảng cáo?", "Kênh nào chuyển đổi tốt nhất?",
+                            "Viết caption Facebook cho sản phẩm bán chạy nhất"] if has_data else
+                           ["Gợi ý 5 ý tưởng content TikTok cho quán cà phê", "Thương mại điện tử là gì?",
+                            "Xu hướng marketing mới nhất năm nay"])
+            st.caption("Gợi ý nhanh — bấm để hỏi:")
+            for col, q in zip(st.columns(3), suggestions):
+                if col.button(q, width="stretch", disabled=not ready, key=f"sg_{q}"):
+                    picked = q
+        else:
+            for msg in chat["messages"]:
+                st.chat_message(msg["role"], avatar="🧑" if msg["role"] == "user" else "🤖").markdown(msg["text"])
+
+        question = st.chat_input("Hỏi bất cứ điều gì...", disabled=not ready) or picked
+        if question:
+            if not chat:                                        # tạo cuộc trò chuyện mới + gắn dữ liệu đang có
+                cur = str(int(time.time() * 1000))
+                chat = {"title": clean_text(question)[:45], "time": time.strftime("%d/%m/%Y %H:%M"),
+                        "messages": [], "data_name": None, "data_summary": None}
+                chats[cur] = chat
+                st.session_state.cur_chat = cur
+            if has_data and not chat.get("data_summary"):
+                chat["data_name"] = st.session_state.data_file.name
+                chat["data_summary"] = st.session_state.dash["summary"]
+            chat["messages"].append({"role": "user", "text": question})
+            st.chat_message("user", avatar="🧑").markdown(question)
+
+            role = ("Bạn là FoodSave AI – trợ lý AI đa năng. Trả lời MỌI câu hỏi của người dùng ở mọi lĩnh vực "
+                    "(kiến thức chung, học tập, công nghệ, đời sống, tin tức...), bằng tiếng Việt, rõ ràng, chính xác; "
+                    "đặc biệt giỏi marketing, bán hàng và thương mại điện tử. Cần thông tin mới thì tra cứu Google.\n")
+            if chat.get("data_summary"):
+                role += (f"Cuộc trò chuyện này gắn với dữ liệu '{chat['data_name']}'. Khi câu hỏi liên quan, "
+                         f"hãy dùng số liệu sau:\n{chat['data_summary']}\n")
+            history = [{"role": "user" if m["role"] == "user" else "model", "parts": [{"text": m["text"]}]}
+                       for m in chat["messages"][-11:]]
+            history[0]["parts"][0]["text"] = role + "\n" + history[0]["parts"][0]["text"]
+            with st.chat_message("assistant", avatar="🤖"):
+                try:
+                    with st.spinner("Đang suy nghĩ..."):
+                        answer, _ = ask_gemini(history, search=True)
+                except Exception as e:  # noqa: BLE001
+                    answer = f"⚠️ {e}"
+                st.markdown(answer)
+            chat["messages"].append({"role": "assistant", "text": answer})
+            st.session_state.need_save = True
             st.rerun()
 
-html('<div class="fs-footer">AI Marketing Agent — Môn Thương mại điện tử · Powered by Google Gemini</div>')
+        if chat:
+            b1, b2 = st.columns(2)
+            md = "\n\n".join(f"**{'Bạn' if m['role'] == 'user' else 'AI'}:** {m['text']}" for m in chat["messages"])
+            b1.download_button("⬇️ Tải cuộc trò chuyện (.md)", f"# {chat['title']}\n\n{md}", "cuoc_tro_chuyen.md",
+                               width="stretch")
+            if b2.button("🗑️ Xóa cuộc trò chuyện này", width="stretch"):
+                chats.pop(cur, None)
+                st.session_state.cur_chat = None
+                st.session_state.need_save = True
+                st.rerun()
+
+    save_chats()
+
+html('<div class="fs-footer">FoodSave · AI Marketing Agent — Môn Thương mại điện tử · Powered by Google Gemini</div>')
