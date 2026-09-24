@@ -51,18 +51,43 @@ NO_QUOTA = ("429", "RESOURCE_EXHAUSTED", "quota", "billing", "PERMISSION_DENIED"
 
 
 def get_api_key():
+    """Đọc key từ Secrets (chấp nhận vài cách đặt tên), tự bỏ dấu cách / ngoặc kép thừa."""
+    key = ""
     try:
-        if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
+        for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key", "api_key"):
+            if name in st.secrets:
+                key = str(st.secrets[name])
+                break
     except Exception:  # noqa: BLE001
         pass
-    return os.environ.get("GEMINI_API_KEY", "")
+    key = key or os.environ.get("GEMINI_API_KEY", "")
+    return key.strip().strip('"').strip("'").strip("“”").strip()
+
+
+def explain_error(e):
+    """Dịch lỗi của Google sang tiếng Việt dễ hiểu."""
+    msg = str(e)
+    if "API_KEY_INVALID" in msg or "API key not valid" in msg:
+        return "API key không hợp lệ (sai, thiếu ký tự hoặc đã bị xóa). Tạo key mới tại aistudio.google.com rồi dán lại vào Secrets."
+    if "SERVICE_DISABLED" in msg or "has not been used" in msg:
+        return "Project của key chưa bật Gemini API. Nên tạo key mới ngay trong aistudio.google.com (Get API key → Create API key)."
+    if "PERMISSION_DENIED" in msg or "403" in msg:
+        return "Key bị giới hạn quyền (API restrictions / giới hạn website). Tạo key mới không giới hạn trong AI Studio."
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return "Key đã hết lượt dùng miễn phí trong phút/ngày. Chờ một lúc hoặc dùng key khác."
+    if "location" in msg.lower() and "not supported" in msg.lower():
+        return "Máy chủ ở khu vực Google chưa hỗ trợ Gemini API."
+    return msg[:300]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def available_models(api_key: str):
     """Danh sách model key này đang được dùng (Google hay đổi/khai tử model)."""
-    return {(m.name or "").replace("models/", "") for m in genai.Client(api_key=api_key).models.list()}
+    client = genai.Client(api_key=api_key)          # giữ client sống suốt lúc duyệt danh sách (tránh lỗi "client has been closed")
+    names = set()
+    for m in client.models.list(config={"page_size": 1000}):
+        names.add((m.name or "").replace("models/", ""))
+    return names
 
 
 def pick(candidates, extra_filter=None):
@@ -831,12 +856,14 @@ def save_chats():
 # ---------------- khung trang ----------------
 html(CSS)
 api_key = get_api_key()
-ready = False
+ready, api_error = False, ""
 if api_key:
     try:
         ready = bool(text_models())
-    except Exception:  # noqa: BLE001
-        ready = False
+        if not ready:
+            api_error = "Key hợp lệ nhưng không tìm thấy model Gemini viết chữ nào."
+    except Exception as e:  # noqa: BLE001
+        api_error = explain_error(e)
 
 html('<div class="fs-bar"><span>Excel → Dashboard → Chiến lược → Content → Ảnh & Video · tự động 100%</span>'
      '<span class="live">LIVE</span></div>')
@@ -847,7 +874,8 @@ model_now = st.session_state.get("last_model") or (text_models()[0] if ready els
 if ready:
     status = f'<span class="fs-status on">● AI sẵn sàng · {model_now}</span>'
 elif api_key:
-    status = '<span class="fs-status off">● Không kết nối được Gemini – kiểm tra lại API key</span>'
+    status = (f'<span class="fs-status off">● Không kết nối được Gemini – {api_error} '
+              f'(key đang dùng: {api_key[:6]}…{api_key[-4:]}, dài {len(api_key)} ký tự)</span>')
 else:
     status = '<span class="fs-status off">● Chưa cấu hình GEMINI_API_KEY trong Secrets</span>'
 
@@ -1028,7 +1056,7 @@ with tab_chat:
                 f"📎 Đang dùng dữ liệu: {data_name}" if data_name else
                 "Hỏi gì cũng được — kiến thức chung, tin tức, marketing, học tập… (không cần tải dữ liệu)")
         if not ready:
-            st.warning("AI chưa sẵn sàng: cần thêm GEMINI_API_KEY vào Secrets của Streamlit.")
+            st.warning("AI chưa sẵn sàng – xem thông báo màu vàng ở đầu trang.")
 
         picked = None
         if not chat:
